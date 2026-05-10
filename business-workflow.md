@@ -6,87 +6,79 @@
 sequenceDiagram
     autonumber
 
-    participant C  as 🧑 Customer<br/>(POS / Online / Wholesale)
-    participant ERP as ⚙️ ERP System
-    participant INV as 📦 Inventory Module
-    participant ACC as 💰 Accounting Module
+    participant C   as Customer
+    participant ERP as ERP System
+    participant INV as Inventory Module
+    participant ACC as Accounting Module
 
-    %% ════════════════════════════════════════════════════════
-    Note over C,ACC: ── CHANNEL 1: POS (Walk-in / Retail — Instant Flow) ──
-    %% ════════════════════════════════════════════════════════
+    Note over C,ACC: CHANNEL 1 - POS Walk-in Retail (Instant Flow)
 
-    C->>ERP: Scan barcode / Select products at counter
+    C->>ERP: Scan barcode or select products at counter
     ERP->>INV: Check real-time stock availability
-    INV-->>ERP: Stock confirmed (quantity & price)
-    ERP->>C: Display cart & total amount (incl. VAT)
+    INV-->>ERP: Stock confirmed with quantity and price
+    ERP->>C: Display cart and total amount including VAT
 
-    C->>ERP: Tender payment (Cash / Card / QR)
+    C->>ERP: Tender payment via Cash, Card, or QR
     ERP->>ACC: Record payment transaction
-    ACC-->>ERP: Payment confirmed & journal entry created
+    ACC-->>ERP: Payment confirmed and journal entry created
 
-    ERP->>INV: Commit inventory deduction (QuantityOnHand -=)
+    ERP->>INV: Deduct inventory qty_on_hand for sold items
     INV-->>ERP: Stock updated successfully
-    ERP->>C: Print / send e-Receipt
-    Note right of ERP: Order Status → Delivered ✅<br/>No shipment step needed
+    ERP->>C: Issue receipt (print or digital)
+    Note right of ERP: Order status set to Completed
 
-    %% ════════════════════════════════════════════════════════
-    Note over C,ACC: ── CHANNEL 2: E-commerce (Online Order Flow) ──
-    %% ════════════════════════════════════════════════════════
+    Note over C,ACC: CHANNEL 2 - E-commerce Online Order Flow
 
-    C->>ERP: Place order via website / app
-    ERP->>INV: Check & soft-reserve stock
-    INV-->>ERP: Reservation confirmed (ReservationID)
-    ERP->>ACC: Generate Proforma Invoice
-    ERP->>C: Order confirmation + payment link / instructions
+    C->>ERP: Place order via website or mobile app
+    ERP->>INV: Check stock and soft-reserve items
+    INV-->>ERP: Reservation confirmed with reservation ID
+    ERP->>ACC: Generate proforma invoice
+    ERP->>C: Send order confirmation and payment link
 
     C->>ERP: Complete online payment
-    ERP->>ACC: Verify & record payment (AR settled)
-    ACC-->>ERP: Payment verified
+    ERP->>ACC: Verify and record payment
+    ACC-->>ERP: Payment verified and posted
 
-    ERP->>INV: Confirm reservation → trigger Pick & Pack
+    ERP->>INV: Confirm reservation and trigger Pick and Pack
     INV-->>ERP: Goods ready for dispatch
-    ERP->>C: Shipment notification (TrackingNo)
-    Note right of ERP: Order Status → Shipped 🚚
-
-    ERP->>ACC: Issue Tax Invoice
+    ERP->>C: Send shipment notification with tracking number
+    ERP->>ACC: Issue tax invoice
     ACC-->>ERP: Invoice recorded in AR ledger
+    Note right of ERP: Order status set to Shipped
 
-    %% ════════════════════════════════════════════════════════
-    Note over C,ACC: ── CHANNEL 3: Sales Rep / B2B (Quotation → Sales Order Flow) ──
-    %% ════════════════════════════════════════════════════════
+    Note over C,ACC: CHANNEL 3 - Sales Rep B2B (Quotation to Sales Order Flow)
 
-    C->>ERP: Request for Quotation (RFQ)
-    ERP->>INV: Check availability & lead time
-    INV-->>ERP: Available qty, warehouse location, lead time
+    C->>ERP: Submit Request for Quotation (RFQ)
+    ERP->>INV: Check availability and lead time
+    INV-->>ERP: Available qty and lead time confirmed
 
-    ERP->>ERP: Apply wholesale pricing / discount rules
-    ERP->>C: Send Quotation (QT) with validity period
+    ERP->>ERP: Apply wholesale pricing and discount rules
+    ERP->>C: Send Quotation with validity period
 
     alt Customer Approves Quotation
-        C->>ERP: Approve QT → Convert to Sales Order (SO)
-        ERP->>INV: Reserve inventory against SO
-        INV-->>ERP: Inventory reserved (QuantityReserved +=)
-        ERP->>C: SO Acknowledgement (order confirmed)
+        C->>ERP: Approve quotation and convert to Sales Order
+        ERP->>INV: Reserve inventory against Sales Order
+        INV-->>ERP: Inventory reserved and qty_reserved updated
+        ERP->>C: Send Sales Order acknowledgement
 
-        ERP->>INV: Trigger warehouse fulfillment (Pick → Pack → Ship)
-        INV-->>ERP: Shipment dispatched (TrackingNo, DeliveryDate)
+        ERP->>INV: Trigger warehouse fulfillment Pick and Pack and Ship
+        INV-->>ERP: Shipment dispatched with tracking number and delivery date
 
-        ERP->>ACC: Issue Tax Invoice (credit terms applied)
-        ACC-->>ERP: Invoice created; AR entry posted
+        ERP->>ACC: Issue tax invoice with credit terms applied
+        ACC-->>ERP: Invoice created and AR entry posted
+        ERP->>C: Send invoice and delivery note
+        Note right of ACC: Credit period starts e.g. Net 30 days
 
-        ERP->>C: Send Invoice + Delivery Note
-        Note right of ACC: Credit period starts (e.g., Net 30)
+        C->>ACC: Pay via bank transfer or cheque within credit period
+        ACC->>ACC: Match payment to invoice and clear AR balance
+        ACC->>ERP: Invoice marked as settled
+        ERP->>C: Send payment receipt and account statement
 
-        C->>ACC: Bank transfer / cheque within credit period
-        ACC->>ACC: Match payment to invoice (AR cleared)
-        ACC->>ERP: Invoice marked as Settled ✅
-        ERP->>C: Payment receipt / statement
-
-    else Customer Rejects / Quotation Expires
-        C->>ERP: Decline or no response
-        ERP->>ERP: Mark Quotation as Cancelled/Expired
+    else Customer Rejects or Quotation Expires
+        C->>ERP: Decline or no response before expiry
+        ERP->>ERP: Mark quotation as Cancelled or Expired
         ERP->>INV: Release any soft reservation
-        Note right of ERP: Order Status → Cancelled ❌
+        Note right of ERP: Order status set to Cancelled
     end
 ```
 
@@ -96,14 +88,14 @@ sequenceDiagram
 
 | Step | POS | E-commerce | Sales Rep (B2B) |
 |------|-----|------------|-----------------|
-| **Order Creation** | Instant (scan at counter) | Online cart checkout | Request for Quotation (RFQ) |
+| **Order Creation** | Instant scan at counter | Online cart checkout | Request for Quotation (RFQ) |
 | **Inventory Check** | Real-time at POS | Real-time + soft reserve | Check availability + lead time |
 | **Pricing** | Fixed retail price | Fixed retail price | Wholesale / negotiated price |
-| **Approval Step** | None | None | Quotation → Customer Approval |
-| **Payment Timing** | Immediate (at counter) | Before shipment (online) | After delivery (credit terms) |
-| **Fulfillment** | Customer takes goods | Warehouse → delivery | Warehouse → delivery |
+| **Approval Step** | None | None | Quotation requires customer approval |
+| **Payment Timing** | Immediate at counter | Before shipment (online) | After delivery within credit period |
+| **Fulfillment** | Customer takes goods instantly | Warehouse picks and ships | Warehouse picks and ships |
 | **Invoice** | Receipt issued instantly | Tax invoice after payment | Tax invoice with credit terms |
-| **Settlement** | Immediate | Immediate | Within credit period (Net 30/60) |
+| **Settlement** | Immediate | Immediate | Within credit period (Net 30 or Net 60) |
 
 ---
 
@@ -111,24 +103,26 @@ sequenceDiagram
 
 ### Order Status
 ```
-Draft → Confirmed → Processing → Shipped → Delivered → [Closed]
-                  ↘ Cancelled (at any point before Shipped)
+pending -> paid -> shipped -> completed
+       \-> cancelled (before shipped)
 ```
 
 ### Quotation Status (B2B only)
 ```
-Draft → Sent → Approved → [Converted to SO]
-             ↘ Rejected / Expired
+draft -> sent -> approved -> [converted to Sales Order]
+              \-> rejected
+              \-> expired
 ```
 
 ### Payment Status
 ```
-Pending → Verified → Settled
-        ↘ Failed → Retry
+pending -> success
+       \-> failed -> [retry]
 ```
 
 ### Inventory Reservation
 ```
-Available → SoftReserved (on order/quotation) → Committed (deducted on shipment)
-          ↘ Released (on cancellation)
+available -> soft_reserved (on order or quotation)
+          -> committed (deducted on shipment)
+          \-> released (on cancellation)
 ```

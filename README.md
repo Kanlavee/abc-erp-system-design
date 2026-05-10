@@ -1,11 +1,11 @@
 # ABC Trading — ERP System Design
 
-> **Full-Stack Interview — System Architecture Document**  
-> Designed by a Senior System Architect perspective
+> **Full-Stack Interview — System Architecture Document**
+> Designed from a Senior System Architect perspective
 
 ---
 
-## 📋 Table of Contents
+## Table of Contents
 
 1. [Business Overview](#business-overview)
 2. [System Objectives](#system-objectives)
@@ -46,19 +46,19 @@ The company requires a **unified ERP system** to centralize and standardize all 
 
 ## Sales Channels
 
-### 🏪 Channel 1: POS (Point of Sale)
+### Channel 1: POS (Point of Sale)
 - Walk-in customers purchase products at the physical store
 - **Instant fulfillment** — customer leaves with goods immediately
 - Payment is collected **at the time of purchase**
 - Receipt issued immediately (print or digital)
 
-### 🤝 Channel 2: Sales Representative (B2B Wholesale)
+### Channel 2: Sales Representative (B2B Wholesale)
 - Sales reps visit wholesale customers (restaurants, retailers, distributors)
 - Process follows **Quotation → Approval → Sales Order → Fulfillment**
 - **Credit terms** apply (e.g., Net 30, Net 60 days)
 - Tax invoice issued after delivery; payment collected within credit period
 
-### 🛒 Channel 3: E-commerce (Online)
+### Channel 3: E-commerce (Online)
 - Customers browse and order via website or mobile app
 - **Payment required before shipment**
 - Warehouse picks, packs, and ships after payment confirmation
@@ -73,20 +73,20 @@ The company requires a **unified ERP system** to centralize and standardize all 
 │                        ABC Trading ERP                          │
 │                                                                 │
 │  ┌──────────┐   ┌──────────────┐   ┌───────────────────────┐  │
-│  │   POS    │   │ Sales Rep    │   │     E-commerce        │  │
-│  │ Terminal │   │ Mobile/Web   │   │   Web / Mobile App    │  │
+│  │   POS    │   │  Sales Rep   │   │     E-commerce        │  │
+│  │ Terminal │   │  Mobile/Web  │   │   Web / Mobile App    │  │
 │  └────┬─────┘   └──────┬───────┘   └───────────┬───────────┘  │
-│       │                │                        │               │
+│       │                │                        │              │
 │  ─────┴────────────────┴────────────────────────┴──────────    │
-│                    Order Management Layer                        │
+│               Order Management Layer (unified)                  │
 │  ─────────────────────────────────────────────────────────────  │
 │  ┌─────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
-│  │  Inventory  │  │   Pricing &  │  │   Accounting (AR/AP) │  │
-│  │   Module    │  │   Catalog    │  │     & Invoicing      │  │
+│  │  Inventory  │  │  Pricing &   │  │  Accounting (AR/AP)  │  │
+│  │   Module    │  │   Catalog    │  │    & Invoicing       │  │
 │  └─────────────┘  └──────────────┘  └──────────────────────┘  │
 │  ─────────────────────────────────────────────────────────────  │
 │                    Shared Database Layer                         │
-│         (Products, Customers, Inventory, Orders, Payments)      │
+│     (Products, Customers, Inventory, Orders, Payments, ...)     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -94,74 +94,90 @@ The company requires a **unified ERP system** to centralize and standardize all 
 
 ## Part 1: ER Diagram
 
-📄 See full diagram: [`er-diagram.md`](./er-diagram.md)
+See full diagram: [er-diagram.md](./er-diagram.md)
 
-### Core Entities at a Glance
+### Entity Map
 
 ```
-CATEGORIES ──< PRODUCTS >──< INVENTORIES >── WAREHOUSES
-                    │
-                    └──< ORDER_ITEMS >──< ORDERS >── CUSTOMERS
-                                              │           │
-                                         QUOTATIONS  SALES_CHANNELS
-                                              │
-                               ┌─────────────┼─────────────┐
-                           PAYMENTS      INVOICES       SHIPMENTS
+CATEGORIES ──< PRODUCTS >──< INVENTORY >── WAREHOUSES
+                                                |
+CUSTOMERS ──< ADDRESSES                    SHIPMENTS
+    |               |                          |
+    └──────< ORDERS >──────────────────────────┘
+               |    \
+          SALES_CHANNELS    SALES_REPS
+               |
+    ┌──────────┼───────────┐
+ORDER_ITEMS  QUOTATIONS  PAYMENTS  INVOICES
 ```
 
 ### Entity Summary
 
 | Entity | Purpose | Key Attributes |
 |--------|---------|----------------|
-| `PRODUCTS` | Product master catalog | `SKU`, `BasePrice`, `CategoryID` |
-| `CATEGORIES` | Product grouping | `CategoryName` |
-| `WAREHOUSES` | Storage locations | `Location`, `IsActive` |
-| `INVENTORIES` | Stock levels per warehouse (many-to-many junction) | `QuantityOnHand`, `QuantityReserved` |
-| `CUSTOMERS` | All customer records | `CustomerType` (Retail/Wholesale), `CreditLimit` |
-| `SALES_CHANNELS` | Channel master (POS/SalesRep/Ecommerce) | `ChannelName` |
-| `ORDERS` | Master order across all channels | `ChannelID`, `Status`, `TotalAmount` |
-| `ORDER_ITEMS` | Line items in an order | `Quantity`, `UnitPrice`, `Discount` |
-| `QUOTATIONS` | B2B quotation before SO conversion | `ValidUntil`, `Status` |
-| `PAYMENTS` | Payment transactions | `PaymentMethod`, `Status` |
-| `INVOICES` | Tax invoices and AR tracking | `DueDate`, `PaidAmount` |
-| `SHIPMENTS` | Fulfillment and delivery records | `TrackingNo`, `Carrier` |
+| `CATEGORIES` | Product grouping | `name` |
+| `PRODUCTS` | Master catalog; no stock stored here | `sku` (UK), `base_price`, `category_id` |
+| `WAREHOUSES` | Physical storage locations | `location`, `is_active` |
+| `INVENTORY` | Stock per warehouse — resolves Products many-to-many Warehouses | `qty_on_hand`, `qty_reserved`, `qty_available` |
+| `SALES_CHANNELS` | Channel master — POS / SalesRep / Ecommerce | `name`, `is_active` |
+| `SALES_REPS` | Field sales reps for B2B orders | `employee_code` (UK), `region` |
+| `CUSTOMERS` | All customers across channels | `customer_type` Retail/Wholesale, `credit_limit`, `credit_days` |
+| `ADDRESSES` | Multiple addresses per customer | `address_type` billing/shipping, `is_default` |
+| `ORDERS` | Unified order record; status = pending / paid / shipped / completed / cancelled | `channel_id`, `sales_rep_id` (nullable), `shipping_addr_id` |
+| `ORDER_ITEMS` | Line items; resolves Orders many-to-many Products | `quantity`, `unit_price`, `discount_pct` |
+| `QUOTATIONS` | B2B only; converts to Sales Order on approval | `valid_until`, `status` |
+| `PAYMENTS` | Transactions per order; supports partial payment | `method` cash/card/transfer/qr, `status` pending/success/failed, `paid_at` |
+| `INVOICES` | Tax invoices; tracks AR balance | `invoice_no` (UK), `due_date`, `paid_amount` |
+| `SHIPMENTS` | Fulfillment records per dispatch | `tracking_no` (UK), `carrier`, `shipped_at`, `delivered_at` |
 
 ### Key Relationship Rules
 
-- **Products ↔ Warehouses** → Many-to-Many via `INVENTORIES` (junction table)
-- **Orders → OrderItems** → One-to-Many (an order has multiple line items)
-- **Orders → Payments** → One-to-Many (support partial payments / installments)
-- **CUSTOMERS.CustomerType** drives pricing tier and credit term logic
-- **ORDERS.ChannelID** is the unified channel identifier for cross-channel reporting
+- **Products and Warehouses** — Many-to-many via `INVENTORY` (junction table); stock is never stored in PRODUCTS
+- **Customers and Addresses** — One-to-many; ADDRESSES is reused by both ORDERS and SHIPMENTS
+- **Orders and Sales Reps** — Optional FK; only B2B orders have a `sales_rep_id`
+- **Orders and Payments** — One-to-many; supports partial payments and retries
+- **`customer_type`** drives pricing tier and credit term logic
 
 ---
 
 ## Part 2: Business Workflow
 
-📄 See full diagram: [`business-workflow.md`](./business-workflow.md)
+See full diagram: [business-workflow.md](./business-workflow.md)
 
 ### POS Flow (Instant)
 
 ```
-Customer → Scan Items → ERP checks stock → Payment → 
-Receipt issued → Inventory deducted → Done ✅
+Customer scans items
+  -> ERP checks stock
+  -> Customer pays
+  -> Receipt issued
+  -> Inventory deducted
+  -> Order status: Completed
 ```
 
 ### E-commerce Flow
 
 ```
-Customer → Place Order → Stock Reserved → Payment Link →
-Payment Confirmed → Warehouse Pick & Pack → Shipped 🚚 →
-Tax Invoice issued
+Customer places order online
+  -> Stock soft-reserved
+  -> Customer pays online
+  -> Warehouse: Pick, Pack, Ship
+  -> Tax invoice issued
+  -> Order status: Shipped
 ```
 
 ### Sales Rep / B2B Flow (Quotation-based)
 
 ```
-Customer RFQ → ERP checks stock → Quotation sent →
-Customer Approves → Sales Order created → Stock Reserved →
-Warehouse Fulfillment → Delivery → Tax Invoice (credit terms) →
-Payment within credit period → AR Settled ✅
+Customer submits RFQ
+  -> ERP checks stock and lead time
+  -> Quotation sent to customer
+  -> Customer approves -> Sales Order created
+  -> Inventory reserved
+  -> Warehouse fulfillment
+  -> Tax invoice issued (credit terms)
+  -> Customer pays within credit period
+  -> AR settled, Order status: Completed
 ```
 
 ---
@@ -169,26 +185,34 @@ Payment within credit period → AR Settled ✅
 ## Key Business Rules
 
 ### Inventory Management
-- `QuantityAvailable = QuantityOnHand − QuantityReserved`
-- Stock is **soft-reserved** when an order/quotation is confirmed
-- Stock is **hard-committed** (deducted) only when goods are shipped/handed over
-- Reservation is **released** if an order is cancelled
+- `qty_available = qty_on_hand - qty_reserved`
+- Stock is **soft-reserved** when an order or quotation is confirmed
+- Stock is **committed** (deducted from `qty_on_hand`) only when goods are shipped
+- Reservation is **released** automatically if an order is cancelled
 
 ### Pricing Rules
-- `BasePrice` in PRODUCTS is the standard retail price
-- Wholesale customers may receive negotiated prices (percentage discount stored in `ORDER_ITEMS.DiscountPct`)
-- POS applies retail price; Sales Rep can apply approved discounts
+- `base_price` in PRODUCTS is the standard retail price
+- Wholesale customers receive negotiated prices via `order_items.discount_pct`
+- Sales Reps can apply pre-approved discount tiers per customer segment
 
-### Credit & Payment Terms
-- **Retail customers**: Payment required immediately (POS/E-commerce)
-- **Wholesale customers**: Credit terms defined by `CUSTOMERS.CreditDays` (e.g., 30, 60 days)
-- Outstanding invoices tracked in `INVOICES.PaidAmount` vs `TotalAmount`
+### Credit and Payment Terms
+- **Retail customers**: Payment required immediately (POS / E-commerce)
+- **Wholesale customers**: Credit terms defined by `customers.credit_days` (e.g., 30, 60 days)
+- AR balance tracked via `invoices.total_amount` vs `invoices.paid_amount`
 
 ### Order Status Lifecycle
 ```
-Draft → Confirmed → Processing → Shipped → Delivered → Closed
-                  ↘ Cancelled
+pending -> paid -> shipped -> completed
+       \-> cancelled (before shipped)
 ```
+
+### Payment Method Values
+| Method | Channel |
+|--------|---------|
+| `cash` | POS |
+| `credit_card` | POS / E-commerce |
+| `qr` | POS / E-commerce |
+| `bank_transfer` | B2B / E-commerce |
 
 ---
 
@@ -196,32 +220,32 @@ Draft → Confirmed → Processing → Shipped → Delivered → Closed
 
 | Layer | Technology | Rationale |
 |-------|------------|-----------|
-| **Frontend** | React + TypeScript | Component-based, type-safe, scalable |
-| **Backend API** | Node.js (NestJS) or Go | High throughput, microservice-ready |
-| **Database** | PostgreSQL | Relational integrity, ACID compliance |
+| **Frontend** | React + TypeScript | Component-based, type-safe, scalable UI |
+| **Backend API** | Node.js (NestJS) or Go (Gin) | High throughput, microservice-ready |
+| **Database** | PostgreSQL | Relational integrity, ACID compliance, JSON support |
 | **Cache** | Redis | Real-time inventory reservation, session management |
-| **Message Queue** | RabbitMQ / Kafka | Async order events, inventory sync |
-| **Search** | Elasticsearch | Product catalog search |
-| **Storage** | AWS S3 / GCS | Invoice PDFs, delivery documents |
-| **Deployment** | Docker + Kubernetes | Scalable, cloud-agnostic |
+| **Message Queue** | RabbitMQ / Kafka | Async order events, inventory sync across services |
+| **Search** | Elasticsearch | Product catalog search and reporting |
+| **File Storage** | AWS S3 / GCS | Invoice PDFs, delivery documents |
+| **Deployment** | Docker + Kubernetes | Scalable, cloud-agnostic, zero-downtime deploys |
 
 ---
 
 ## Scalability Considerations
 
 ### Short-term
-- **Database indexing** on `Orders(ChannelID, Status, OrderDate)` and `Inventories(ProductID, WarehouseID)`
-- **Connection pooling** (PgBouncer) for PostgreSQL under high load
+- Index on `orders(channel_id, status, order_date)` and `inventory(product_id, warehouse_id)`
+- Connection pooling via PgBouncer for PostgreSQL under high concurrency
 
 ### Medium-term
-- **Read replicas** for reporting queries (sales dashboards, inventory reports)
-- **Redis caching** for product catalog and frequently-read inventory levels
-- **Async processing** for invoice generation and notification delivery
+- Read replicas for reporting queries (sales dashboards, inventory reports)
+- Redis caching for product catalog and frequently-read inventory levels
+- Async processing for invoice generation, email/SMS notifications
 
 ### Long-term
 - **CQRS pattern** — separate read and write models for orders and inventory
 - **Event Sourcing** — full audit trail of every inventory and order state change
-- **Multi-warehouse routing** — intelligent fulfillment from nearest/optimal warehouse
+- **Multi-warehouse routing** — intelligent fulfillment from nearest or optimal warehouse
 - **Multi-currency / multi-branch** support for regional expansion
 
 ---
@@ -230,12 +254,11 @@ Draft → Confirmed → Processing → Shipped → Delivered → Closed
 
 ```
 abc-erp-system-design/
-├── README.md                  ← This document (system overview)
-├── er-diagram.md              ← Part 1: Mermaid ER Diagram + entity descriptions
-└── business-workflow.md       ← Part 2: Mermaid Sequence Diagram + flow summary
+├── README.md             <- System overview (this file)
+├── er-diagram.md         <- Part 1: Mermaid ER Diagram + entity descriptions
+└── business-workflow.md  <- Part 2: Mermaid Sequence Diagram + flow summary
 ```
 
 ---
 
 *Designed for ABC Trading ERP System — Full-Stack Interview Assessment*
-# abc-erp-system-design-
