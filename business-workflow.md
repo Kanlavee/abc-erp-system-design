@@ -52,11 +52,12 @@ sequenceDiagram
     ERP->>INV: Check availability and lead time
     INV-->>ERP: Available qty and lead time confirmed
 
-    ERP->>ERP: Apply wholesale pricing and discount rules
-    ERP->>C: Send Quotation with validity period
+    ERP->>ERP: Create QUOTATION_ITEMS with negotiated unit price and discount per product
+    ERP->>C: Send Quotation with line items and validity period
 
     alt Customer Approves Quotation
         C->>ERP: Approve quotation and convert to Sales Order
+        ERP->>ERP: Copy QUOTATION_ITEMS to ORDER_ITEMS with agreed pricing
         ERP->>INV: Reserve inventory against Sales Order
         INV-->>ERP: Inventory reserved and qty_reserved updated
         ERP->>C: Send Sales Order acknowledgement
@@ -90,7 +91,7 @@ sequenceDiagram
 |------|-----|------------|-----------------|
 | **Order Creation** | Instant scan at counter | Online cart checkout | Request for Quotation (RFQ) |
 | **Inventory Check** | Real-time at POS | Real-time + soft reserve | Check availability + lead time |
-| **Pricing** | Fixed retail price | Fixed retail price | Wholesale / negotiated price |
+| **Pricing** | Fixed retail price | Fixed retail price | Negotiated per product via QUOTATION_ITEMS |
 | **Approval Step** | None | None | Quotation requires customer approval |
 | **Payment Timing** | Immediate at counter | Before shipment (online) | After delivery within credit period |
 | **Fulfillment** | Customer takes goods instantly | Warehouse picks and ships | Warehouse picks and ships |

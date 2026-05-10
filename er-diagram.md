@@ -103,6 +103,7 @@ erDiagram
         decimal  subtotal
         decimal  tax_amount
         decimal  discount_amount
+        decimal  shipping_amount
         decimal  total_amount
         varchar  remarks
         varchar  created_by
@@ -131,6 +132,17 @@ erDiagram
         varchar  remarks
         datetime created_at
         datetime updated_at
+    }
+
+    QUOTATION_ITEMS {
+        int      quotation_item_id  PK
+        int      quotation_id       FK
+        int      product_id         FK
+        int      quantity
+        decimal  unit_price
+        decimal  discount_pct
+        decimal  subtotal
+        datetime created_at
     }
 
     PAYMENTS {
@@ -212,8 +224,10 @@ erDiagram
     PRODUCTS       ||--o{ ORDER_ITEMS   : "included in"
 
     %% B2B quotation flow - QUOTATION precedes ORDER; ORDERS.quotation_id (nullable) references source
-    SALES_REPS     ||--o{ QUOTATIONS    : "creates"
-    QUOTATIONS     ||--o| ORDERS        : "converts to"
+    SALES_REPS      ||--o{ QUOTATIONS       : "creates"
+    QUOTATIONS      ||--o{ QUOTATION_ITEMS  : "contains"
+    PRODUCTS        ||--o{ QUOTATION_ITEMS  : "included in"
+    QUOTATIONS      ||--o| ORDERS           : "converts to"
 
     %% Financial records
     ORDERS         ||--o{ PAYMENTS      : "paid via"
@@ -244,9 +258,10 @@ erDiagram
 | **SALES_REPS** | `employee_code` (UK), `region` | Field sales representatives for B2B orders |
 | **CUSTOMERS** | `customer_type` — Retail / Wholesale, `credit_limit`, `credit_days` | All customer accounts across channels |
 | **ADDRESSES** | `address_type` — billing / shipping, `is_default` | Multiple addresses per customer; used for both ORDER and SHIPMENT |
-| **ORDERS** | `channel_id`, `sales_rep_id` (nullable), `status`, `shipping_addr_id` | Unified order record; `status` = pending / paid / shipped / completed / cancelled |
+| **ORDERS** | `channel_id`, `sales_rep_id` (nullable), `quotation_id` (nullable), `shipping_amount` | Unified order record; `total_amount = subtotal - discount_amount + tax_amount + shipping_amount` |
 | **ORDER_ITEMS** | `quantity`, `unit_price`, `discount_pct` | Line items resolving many-to-many between ORDERS and PRODUCTS |
-| **QUOTATIONS** | `customer_id`, `sales_rep_id`, `valid_until`, `status` | Pre-order document independent of ORDERS. On approval, a new ORDER is created with `quotation_id` referencing this record |
+| **QUOTATIONS** | `customer_id`, `sales_rep_id`, `valid_until`, `status` | Pre-order document with its own line items (QUOTATION_ITEMS). On approval, a new ORDER is created referencing `quotation_id`; ORDER_ITEMS are populated from QUOTATION_ITEMS |
+| **QUOTATION_ITEMS** | `quotation_id`, `product_id`, `quantity`, `unit_price`, `discount_pct` | Line items within a quotation; mirrors ORDER_ITEMS structure; enables pre-sales pricing negotiation per product |
 | **PAYMENTS** | `method` — cash / credit_card / transfer / qr, `status` — pending / success / failed, `paid_at` | Multiple payments per order (supports partial / split payment) |
 | **INVOICES** | `invoice_no` (UK), `due_date`, `paid_amount` | Tax invoices; tracks Accounts Receivable balance |
 | **SHIPMENTS** | `tracking_no` (UK), `carrier`, `shipped_at`, `delivered_at` | Fulfillment records per warehouse dispatch |
@@ -264,6 +279,8 @@ erDiagram
 | **INVENTORY_MOVEMENTS as append-only log** | Separates current state (INVENTORY) from history (MOVEMENTS); enables fast reads, full audit trail, and stock reconciliation without touching INVENTORY |
 | **PAYMENT_TRANSACTIONS separate from PAYMENTS** | PAYMENTS = logical payment intent; PAYMENT_TRANSACTIONS = physical gateway attempt. Retries add a new row rather than mutating the payment record — supports idempotency and dispute resolution |
 | **QUOTATIONS independent of ORDERS** | QUOTATION is a pre-order document owned by CUSTOMERS; ORDERS.quotation_id (nullable FK) references the source. Eliminates circular dependency and makes the lifecycle unambiguous |
+| **QUOTATION_ITEMS mirrors ORDER_ITEMS** | Quotations need their own line items for pre-sales price negotiation; on approval, ORDER_ITEMS are created by copying QUOTATION_ITEMS with agreed pricing — no data duplication |
+| **`shipping_amount` separate from subtotal** | Shipping cost is a distinct charge (varies by address, carrier, weight); kept separate for financial transparency and reporting |
 | **ADDRESSES as separate entity** | Customers have multiple billing/shipping addresses; reused by ORDERS (shipping_addr_id) and SHIPMENTS (address_id) without data duplication |
 | **`sales_rep_id` nullable on ORDERS** | Only B2B orders have an assigned rep; POS and e-commerce orders set this to NULL |
 | **`status` as varchar not enum** | Allows adding statuses (e.g., `on_hold`, `backordered`) without a schema migration |

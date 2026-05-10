@@ -1,7 +1,7 @@
 # ABC Trading — ERP System Design
 
-> **Full-Stack Interview — System Architecture Document**
-> Designed from a Senior System Architect perspective
+> ** System Architecture Document**
+> 
 
 ---
 
@@ -102,15 +102,16 @@ See full diagram: [er-diagram.md](./er-diagram.md)
 CATEGORIES ──< PRODUCTS >──< INVENTORY >── WAREHOUSES
                 |                               |
                 |                    INVENTORY_MOVEMENTS
-ORDER_ITEMS ────┘
-                                 QUOTATIONS (pre-order)
-CUSTOMERS ──< ADDRESSES               |
-    |               |                 v (on approval)
-    |               └──────< ORDERS >─────── SALES_CHANNELS
-    |                          |    \─────── SALES_REPS
-    └──────────────────────────┘
-              |          |           |              |
-          PAYMENTS    INVOICES   SHIPMENTS     ORDER_ITEMS
+                └──< ORDER_ITEMS
+                └──< QUOTATION_ITEMS
+
+QUOTATIONS ──< QUOTATION_ITEMS
+     |
+     v (converts to on approval)
+CUSTOMERS ──< ADDRESSES ──< ORDERS >── SALES_CHANNELS
+                               |    \── SALES_REPS
+              ┌────────────────┼──────────────────────┐
+          PAYMENTS         INVOICES   SHIPMENTS   ORDER_ITEMS
               |
     PAYMENT_TRANSACTIONS
 ```
@@ -127,9 +128,10 @@ CUSTOMERS ──< ADDRESSES               |
 | `SALES_REPS` | Field sales reps for B2B orders | `employee_code` (UK), `region` |
 | `CUSTOMERS` | All customers across channels | `customer_type` Retail/Wholesale, `credit_limit`, `credit_days` |
 | `ADDRESSES` | Multiple addresses per customer | `address_type` billing/shipping, `is_default` |
-| `ORDERS` | Unified order record; status = pending / paid / shipped / completed / cancelled | `channel_id`, `sales_rep_id` (nullable), `shipping_addr_id` |
+| `ORDERS` | Unified order record; `total_amount = subtotal - discount + tax + shipping_amount` | `channel_id`, `sales_rep_id` (nullable), `quotation_id` (nullable), `shipping_amount` |
 | `ORDER_ITEMS` | Line items; resolves Orders many-to-many Products | `quantity`, `unit_price`, `discount_pct` |
-| `QUOTATIONS` | Pre-order document (B2B); independent of ORDERS. On approval, ORDER is created with `quotation_id` FK | `valid_until`, `status` |
+| `QUOTATIONS` | Pre-order document with its own line items; on approval, ORDER + ORDER_ITEMS are created from it | `valid_until`, `status` |
+| `QUOTATION_ITEMS` | Line items within a quotation; mirrors ORDER_ITEMS; enables per-product price negotiation | `quantity`, `unit_price`, `discount_pct` |
 | `PAYMENTS` | Transactions per order; supports partial payment | `method` cash/card/transfer/qr, `status` pending/success/failed, `paid_at` |
 | `INVOICES` | Tax invoices; tracks AR balance | `invoice_no` (UK), `due_date`, `paid_amount` |
 | `SHIPMENTS` | Fulfillment records per dispatch | `tracking_no` (UK), `carrier`, `shipped_at`, `delivered_at` |
@@ -141,7 +143,8 @@ CUSTOMERS ──< ADDRESSES               |
 - **Products and Warehouses** — Many-to-many via `INVENTORY` (junction table); stock is never stored in PRODUCTS
 - **`qty_available`** — Never persisted; always computed as `qty_on_hand - qty_reserved` at query time
 - **Customers and Addresses** — One-to-many; ADDRESSES reused by ORDERS (`shipping_addr_id`) and SHIPMENTS
-- **Quotations and Orders** — QUOTATION is independent; `ORDERS.quotation_id` (nullable FK) references the source quotation on conversion
+- **Quotations and Orders** — QUOTATION is independent; on approval, ORDER is created with `quotation_id` FK and ORDER_ITEMS are populated from QUOTATION_ITEMS
+- **QUOTATION_ITEMS** — mirrors ORDER_ITEMS structure; enables per-product price negotiation before an order exists
 - **Orders and Payments** — One-to-many; supports partial payments and retries
 - **`sales_rep_id` on ORDERS** — Nullable; set only for B2B orders
 - **INVENTORY_MOVEMENTS and PAYMENT_TRANSACTIONS** — Append-only audit tables; never updated, only inserted
@@ -179,14 +182,18 @@ Customer places order online
 ```
 Customer submits RFQ
   -> ERP checks stock and lead time
+  -> QUOTATION_ITEMS created with negotiated pricing per product
   -> Quotation sent to customer
-  -> Customer approves -> Sales Order created
-  -> Inventory reserved
+  -> Customer approves -> ORDER created (quotation_id set)
+  -> ORDER_ITEMS copied from QUOTATION_ITEMS with agreed pricing
+  -> Inventory reserved per ORDER_ITEMS quantities
   -> Warehouse fulfillment
   -> Tax invoice issued (credit terms)
   -> Customer pays within credit period
   -> AR settled, Order status: Completed
 ```
+
+> **Note:** Quotation module enables pre-sales negotiation and can be extended with approval workflows.
 
 ---
 
@@ -359,4 +366,4 @@ abc-erp-system-design/
 
 ---
 
-*Designed for ABC Trading ERP System — Full-Stack Interview Assessment*
+*Designed for ABC Trading ERP System —*
