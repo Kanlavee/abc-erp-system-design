@@ -100,15 +100,19 @@ See full diagram: [er-diagram.md](./er-diagram.md)
 
 ```
 CATEGORIES ──< PRODUCTS >──< INVENTORY >── WAREHOUSES
-                                                |
-CUSTOMERS ──< ADDRESSES                    SHIPMENTS
-    |               |                          |
-    └──────< ORDERS >──────────────────────────┘
-               |    \
-          SALES_CHANNELS    SALES_REPS
-               |
-    ┌──────────┼───────────┐
-ORDER_ITEMS  QUOTATIONS  PAYMENTS  INVOICES
+                |                               |
+                |                    INVENTORY_MOVEMENTS
+ORDER_ITEMS ────┘
+                                 QUOTATIONS (pre-order)
+CUSTOMERS ──< ADDRESSES               |
+    |               |                 v (on approval)
+    |               └──────< ORDERS >─────── SALES_CHANNELS
+    |                          |    \─────── SALES_REPS
+    └──────────────────────────┘
+              |          |           |              |
+          PAYMENTS    INVOICES   SHIPMENTS     ORDER_ITEMS
+              |
+    PAYMENT_TRANSACTIONS
 ```
 
 ### Entity Summary
@@ -118,25 +122,29 @@ ORDER_ITEMS  QUOTATIONS  PAYMENTS  INVOICES
 | `CATEGORIES` | Product grouping | `name` |
 | `PRODUCTS` | Master catalog; no stock stored here | `sku` (UK), `base_price`, `category_id` |
 | `WAREHOUSES` | Physical storage locations | `location`, `is_active` |
-| `INVENTORY` | Stock per warehouse — resolves Products many-to-many Warehouses | `qty_on_hand`, `qty_reserved`, `qty_available` |
+| `INVENTORY` | Stock per warehouse — resolves Products many-to-many Warehouses | `qty_on_hand`, `qty_reserved` (`qty_available` is derived, not stored) |
 | `SALES_CHANNELS` | Channel master — POS / SalesRep / Ecommerce | `name`, `is_active` |
 | `SALES_REPS` | Field sales reps for B2B orders | `employee_code` (UK), `region` |
 | `CUSTOMERS` | All customers across channels | `customer_type` Retail/Wholesale, `credit_limit`, `credit_days` |
 | `ADDRESSES` | Multiple addresses per customer | `address_type` billing/shipping, `is_default` |
 | `ORDERS` | Unified order record; status = pending / paid / shipped / completed / cancelled | `channel_id`, `sales_rep_id` (nullable), `shipping_addr_id` |
 | `ORDER_ITEMS` | Line items; resolves Orders many-to-many Products | `quantity`, `unit_price`, `discount_pct` |
-| `QUOTATIONS` | B2B only; converts to Sales Order on approval | `valid_until`, `status` |
+| `QUOTATIONS` | Pre-order document (B2B); independent of ORDERS. On approval, ORDER is created with `quotation_id` FK | `valid_until`, `status` |
 | `PAYMENTS` | Transactions per order; supports partial payment | `method` cash/card/transfer/qr, `status` pending/success/failed, `paid_at` |
 | `INVOICES` | Tax invoices; tracks AR balance | `invoice_no` (UK), `due_date`, `paid_amount` |
 | `SHIPMENTS` | Fulfillment records per dispatch | `tracking_no` (UK), `carrier`, `shipped_at`, `delivered_at` |
+| `INVENTORY_MOVEMENTS` | Append-only stock audit log; every reservation, commit, cancel, or adjustment writes here | `change_qty`, `movement_type`, `reference_id` |
+| `PAYMENT_TRANSACTIONS` | Append-only gateway attempt log per PAYMENT; every call recorded regardless of outcome | `attempt_no`, `gateway_ref`, `gateway_response`, `status` |
 
 ### Key Relationship Rules
 
 - **Products and Warehouses** — Many-to-many via `INVENTORY` (junction table); stock is never stored in PRODUCTS
-- **Customers and Addresses** — One-to-many; ADDRESSES is reused by both ORDERS and SHIPMENTS
-- **Orders and Sales Reps** — Optional FK; only B2B orders have a `sales_rep_id`
+- **`qty_available`** — Never persisted; always computed as `qty_on_hand - qty_reserved` at query time
+- **Customers and Addresses** — One-to-many; ADDRESSES reused by ORDERS (`shipping_addr_id`) and SHIPMENTS
+- **Quotations and Orders** — QUOTATION is independent; `ORDERS.quotation_id` (nullable FK) references the source quotation on conversion
 - **Orders and Payments** — One-to-many; supports partial payments and retries
-- **`customer_type`** drives pricing tier and credit term logic
+- **`sales_rep_id` on ORDERS** — Nullable; set only for B2B orders
+- **INVENTORY_MOVEMENTS and PAYMENT_TRANSACTIONS** — Append-only audit tables; never updated, only inserted
 
 ---
 
@@ -213,6 +221,96 @@ pending -> paid -> shipped -> completed
 | `credit_card` | POS / E-commerce |
 | `qr` | POS / E-commerce |
 | `bank_transfer` | B2B / E-commerce |
+
+---
+
+## Data Consistency and Concurrency Strategy
+
+### Inventory Concurrency Control
+- **Row-level locking** (`SELECT ... FOR UPDATE`) on `INVENTORY` rows during reservation prevents concurrent oversell
+- `qty_available` is **never persisted** — computed as `qty_on_hand - qty_reserved` at read time to avoid stale state
+- All reservation and commit operations run inside an **atomic database transaction**
+- **DB-level constraints** prevent negative stock:
+
+```sql
+ALTER TABLE inventory ADD CONSTRAINT chk_qty_non_negative  CHECK (qty_on_hand >= 0);
+ALTER TABLE inventory ADD CONSTRAINT chk_reserved_lte_hand CHECK (qty_reserved <= qty_on_hand);
+```
+
+### Payment Idempotency
+- Every gateway request carries an **idempotency key** (derived from `payment_id + attempt_no`) to prevent double charges on retry
+- `PAYMENT_TRANSACTIONS` records every call independently — `PAYMENTS` is never mutated between retries
+- Payment status transitions are one-directional: `pending → success` or `pending → failed`
+
+### Locking Strategy by Scenario
+| Scenario | Strategy | Reason |
+|----------|----------|--------|
+| Inventory reservation | Pessimistic (row lock) | High contention — must prevent oversell |
+| Order status update | Optimistic (version field) | Low contention — avoids unnecessary lock overhead |
+| Payment attempt | No lock — new row per attempt | Retries are new PAYMENT_TRANSACTIONS records |
+
+---
+
+## Failure Handling and Resilience
+
+### Payment Failure Strategy
+| Scenario | Behavior |
+|----------|----------|
+| Gateway timeout | Retry with same idempotency key using exponential backoff |
+| Card declined | Notify customer, keep order `pending`, prompt retry |
+| Max retries exceeded | Order stays `pending`, alert customer and support team |
+| Double-charge risk | Idempotency key on gateway prevents re-charge on duplicate call |
+
+### Shipment Failure — Saga Compensation
+If shipment creation fails **after** inventory is committed:
+1. **Compensate** — restore `qty_on_hand` via a `cancel_commit` record in `INVENTORY_MOVEMENTS`
+2. **Hold** — set `INVOICES.status` to `on_hold`
+3. **Retry** — schedule re-attempt with exponential backoff (max 3 attempts)
+4. **Escalate** — if all retries fail, alert operations team for manual intervention
+
+### Saga Step Map
+| Step | Action | Compensation on Failure |
+|------|--------|------------------------|
+| 1 | Reserve inventory | Release reservation (cancel movement) |
+| 2 | Record payment intent | Mark payment as failed |
+| 3 | Commit inventory | Restore qty_on_hand (cancel_commit movement) |
+| 4 | Create shipment | Cancel shipment record |
+| 5 | Issue invoice | Void invoice |
+
+---
+
+## Audit and Traceability
+
+### INVENTORY_MOVEMENTS — Stock Audit Log
+Every stock change writes an **immutable** record:
+
+| movement_type | Trigger | Effect |
+|---------------|---------|--------|
+| `order_reserve` | Order confirmed | `qty_reserved += n` |
+| `order_commit` | Shipment dispatched | `qty_on_hand -= n`, `qty_reserved -= n` |
+| `cancel` | Order/quotation cancelled | `qty_reserved -= n` |
+| `cancel_commit` | Shipment failed (compensation) | `qty_on_hand += n` |
+| `adjustment` | Manual stock correction | `qty_on_hand +/- n` |
+| `return` | Customer return processed | `qty_on_hand += n` |
+
+Use cases: stock reconciliation, shrinkage detection, regulatory compliance, warehouse audits.
+
+### PAYMENT_TRANSACTIONS — Financial Trace
+Every gateway call is logged regardless of outcome:
+- `gateway_response` stores the raw payload for dispute resolution
+- `attempt_no` + `gateway_ref` verify idempotency across retries
+- Traceability chain: `PAYMENT_TRANSACTIONS → PAYMENTS → INVOICES → ORDERS`
+
+### Full Audit Chain
+```
+ORDERS
+  ├── ORDER_ITEMS              -> PRODUCTS (what was sold)
+  ├── PAYMENTS
+  │     └── PAYMENT_TRANSACTIONS  (every gateway attempt with full response)
+  ├── INVOICES                 (AR balance: total_amount vs paid_amount)
+  ├── SHIPMENTS                (dispatch trail per warehouse)
+  └── INVENTORY_MOVEMENTS      (stock change log linked via reference_id = order_id)
+```
 
 ---
 

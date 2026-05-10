@@ -126,3 +126,120 @@ available -> soft_reserved (on order or quotation)
           -> committed (deducted on shipment)
           \-> released (on cancellation)
 ```
+
+---
+
+## Failure Scenarios
+
+### Scenario 1: Payment Failure and Retry
+
+```mermaid
+sequenceDiagram
+    participant C   as Customer
+    participant ERP as ERP System
+    participant GW  as Payment Gateway
+    participant ACC as Accounting Module
+
+    C->>ERP: Submit payment for order
+    ERP->>GW: Charge request with idempotency key (payment_id + attempt 1)
+    GW-->>ERP: Failed - card declined
+    ERP->>ACC: Log failed PAYMENT_TRANSACTIONS record attempt 1
+    ERP->>C: Notify failure and prompt retry
+
+    C->>ERP: Retry payment
+    ERP->>GW: Charge request with same idempotency key (payment_id + attempt 2)
+    GW-->>ERP: Payment success
+    ERP->>ACC: Log successful PAYMENT_TRANSACTIONS record attempt 2
+    ERP->>ERP: Update order status to paid
+    Note right of ERP: Same idempotency key prevents double charge on retry
+```
+
+### Scenario 2: Inventory Conflict - Oversell Prevention
+
+```mermaid
+sequenceDiagram
+    participant UA  as User A
+    participant UB  as User B
+    participant ERP as ERP System
+    participant INV as Inventory Module
+
+    Note over INV: qty_on_hand is 10 for SKU-001
+
+    UA->>ERP: Order 10 units of SKU-001
+    UB->>ERP: Order 8 units of SKU-001
+
+    ERP->>INV: Reserve 10 units for User A using SELECT FOR UPDATE row lock
+    INV-->>ERP: Reserved - qty_reserved set to 10 and qty_available now 0
+    ERP->>UA: Order confirmed
+
+    ERP->>INV: Reserve 8 units for User B using SELECT FOR UPDATE row lock
+    INV-->>ERP: Rejected - qty_available is 0
+    ERP->>UB: Order rejected - insufficient stock
+    Note right of INV: Row-level lock prevents concurrent oversell
+```
+
+### Scenario 3: Shipment Failure - Saga Compensation
+
+```mermaid
+sequenceDiagram
+    participant ERP as ERP System
+    participant INV as Inventory Module
+    participant SHP as Shipment Service
+    participant ACC as Accounting Module
+
+    ERP->>INV: Commit inventory - deduct qty_on_hand
+    INV-->>ERP: Committed and INVENTORY_MOVEMENTS record written
+    ERP->>SHP: Create shipment record
+    SHP-->>ERP: Shipment creation failed
+
+    Note over ERP: Saga compensation triggered
+    ERP->>INV: Compensate - restore qty_on_hand via cancel_commit movement
+    INV-->>ERP: Inventory restored and compensation movement logged
+    ERP->>ACC: Set invoice status to on_hold
+    ERP->>ERP: Schedule shipment retry with exponential backoff
+    Note right of ERP: Order stays in processing until retry succeeds or escalation
+```
+
+---
+
+## Event-Driven Flow
+
+Domain events decouple modules and guarantee reliable async processing.
+
+```
+Event                   Consumers
+────────────────────────────────────────────────────────────────
+OrderCreated         -> Inventory: ReserveStock
+PaymentSuccess       -> Order: SetStatus(paid)
+                     -> Inventory: CommitStock
+                     -> Shipment: CreateShipment
+                     -> Accounting: IssueInvoice
+ShipmentCreated      -> Notification: NotifyCustomer(shipped)
+ShipmentFailed       -> Inventory: RollbackCommit (cancel_commit)
+                     -> Accounting: PutInvoiceOnHold
+                     -> Order: ScheduleRetry
+OrderCancelled       -> Inventory: ReleaseReservation
+                     -> Accounting: VoidInvoice
+PaymentFailed        -> Notification: NotifyCustomer(retry)
+                     -> Order: SchedulePaymentRetry
+```
+
+---
+
+## Inventory State Transitions
+
+Every state change writes an immutable record to INVENTORY_MOVEMENTS.
+
+```
+AVAILABLE
+  |-- [order confirmed]       --> SOFT_RESERVED  (movement_type: order_reserve)
+  |-- [order cancelled]       --> AVAILABLE       (movement_type: cancel)
+
+SOFT_RESERVED
+  |-- [payment confirmed]     --> COMMITTED       (movement_type: order_commit)
+  |-- [order cancelled]       --> AVAILABLE       (movement_type: cancel)
+
+COMMITTED
+  |-- [shipment dispatched]   --> FULFILLED        qty_on_hand decremented
+  |-- [shipment failed]       --> SOFT_RESERVED   (movement_type: cancel_commit)
+```

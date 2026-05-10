@@ -33,13 +33,13 @@ erDiagram
         datetime created_at
     }
 
+    %% qty_available is DERIVED: qty_on_hand - qty_reserved (computed at read time, never persisted)
     INVENTORY {
         int      inventory_id   PK
         int      product_id     FK
         int      warehouse_id   FK
         int      qty_on_hand
         int      qty_reserved
-        int      qty_available
         int      reorder_level
         datetime last_updated
     }
@@ -97,6 +97,7 @@ erDiagram
         int      channel_id        FK
         int      sales_rep_id      FK
         int      shipping_addr_id  FK
+        int      quotation_id      FK
         datetime order_date
         varchar  status
         decimal  subtotal
@@ -120,9 +121,10 @@ erDiagram
         datetime created_at
     }
 
+    %% QUOTATION is a pre-order document; on approval a new ORDER is created referencing it via quotation_id
     QUOTATIONS {
         int      quotation_id  PK
-        int      order_id      FK
+        int      customer_id   FK
         int      sales_rep_id  FK
         datetime valid_until
         varchar  status
@@ -169,6 +171,29 @@ erDiagram
         datetime created_at
     }
 
+    %% Append-only audit / event-log tables (INSERT only, never updated)
+    INVENTORY_MOVEMENTS {
+        int      movement_id    PK
+        int      product_id     FK
+        int      warehouse_id   FK
+        int      change_qty
+        varchar  movement_type
+        int      reference_id
+        varchar  reference_type
+        varchar  created_by
+        datetime created_at
+    }
+
+    PAYMENT_TRANSACTIONS {
+        int      transaction_id    PK
+        int      payment_id        FK
+        int      attempt_no
+        varchar  gateway_ref
+        varchar  gateway_response
+        varchar  status
+        datetime created_at
+    }
+
     %% Product catalog and inventory
     CATEGORIES     ||--o{ PRODUCTS      : "categorizes"
     PRODUCTS       ||--o{ INVENTORY     : "tracked in"
@@ -177,6 +202,7 @@ erDiagram
     %% Customer and address
     CUSTOMERS      ||--o{ ADDRESSES     : "has"
     CUSTOMERS      ||--o{ ORDERS        : "places"
+    CUSTOMERS      ||--o{ QUOTATIONS    : "requests"
 
     %% Order core relations
     SALES_CHANNELS ||--o{ ORDERS        : "channel for"
@@ -185,9 +211,9 @@ erDiagram
     ORDERS         ||--o{ ORDER_ITEMS   : "contains"
     PRODUCTS       ||--o{ ORDER_ITEMS   : "included in"
 
-    %% B2B quotation flow
-    ORDERS         ||--o| QUOTATIONS    : "quoted as"
+    %% B2B quotation flow - QUOTATION precedes ORDER; ORDERS.quotation_id (nullable) references source
     SALES_REPS     ||--o{ QUOTATIONS    : "creates"
+    QUOTATIONS     ||--o| ORDERS        : "converts to"
 
     %% Financial records
     ORDERS         ||--o{ PAYMENTS      : "paid via"
@@ -197,6 +223,11 @@ erDiagram
     ORDERS         ||--o{ SHIPMENTS     : "fulfilled via"
     WAREHOUSES     ||--o{ SHIPMENTS     : "dispatched from"
     ADDRESSES      ||--o{ SHIPMENTS     : "delivered to"
+
+    %% Audit logs - append-only; never updated; full traceability
+    PRODUCTS       ||--o{ INVENTORY_MOVEMENTS  : "logged in"
+    WAREHOUSES     ||--o{ INVENTORY_MOVEMENTS  : "tracked in"
+    PAYMENTS       ||--o{ PAYMENT_TRANSACTIONS : "attempted via"
 ```
 
 ---
@@ -208,17 +239,19 @@ erDiagram
 | **CATEGORIES** | `category_id`, `name` | Product groupings (e.g., Beverages, Snacks) |
 | **PRODUCTS** | `sku` (UK), `base_price`, `category_id` | Master product catalog; no stock stored here |
 | **WAREHOUSES** | `warehouse_id`, `location` | Physical storage locations |
-| **INVENTORY** | `qty_on_hand`, `qty_reserved`, `qty_available` | Junction table (Products ↔ Warehouses); tracks live stock per location |
+| **INVENTORY** | `qty_on_hand`, `qty_reserved` | Junction table (Products ↔ Warehouses); tracks live stock. `qty_available` is **derived** (`qty_on_hand - qty_reserved`), never persisted |
 | **SALES_CHANNELS** | `name` — POS / SalesRep / Ecommerce | Channel master; extensible for future channels |
 | **SALES_REPS** | `employee_code` (UK), `region` | Field sales representatives for B2B orders |
 | **CUSTOMERS** | `customer_type` — Retail / Wholesale, `credit_limit`, `credit_days` | All customer accounts across channels |
 | **ADDRESSES** | `address_type` — billing / shipping, `is_default` | Multiple addresses per customer; used for both ORDER and SHIPMENT |
 | **ORDERS** | `channel_id`, `sales_rep_id` (nullable), `status`, `shipping_addr_id` | Unified order record; `status` = pending / paid / shipped / completed / cancelled |
 | **ORDER_ITEMS** | `quantity`, `unit_price`, `discount_pct` | Line items resolving many-to-many between ORDERS and PRODUCTS |
-| **QUOTATIONS** | `valid_until`, `status` — draft / sent / approved / expired | B2B only; converts to confirmed ORDER on approval |
+| **QUOTATIONS** | `customer_id`, `sales_rep_id`, `valid_until`, `status` | Pre-order document independent of ORDERS. On approval, a new ORDER is created with `quotation_id` referencing this record |
 | **PAYMENTS** | `method` — cash / credit_card / transfer / qr, `status` — pending / success / failed, `paid_at` | Multiple payments per order (supports partial / split payment) |
 | **INVOICES** | `invoice_no` (UK), `due_date`, `paid_amount` | Tax invoices; tracks Accounts Receivable balance |
 | **SHIPMENTS** | `tracking_no` (UK), `carrier`, `shipped_at`, `delivered_at` | Fulfillment records per warehouse dispatch |
+| **INVENTORY_MOVEMENTS** | `change_qty`, `movement_type`, `reference_id`, `reference_type` | Append-only stock audit log. `movement_type` values: `order_reserve`, `order_commit`, `cancel`, `cancel_commit`, `adjustment`, `return` |
+| **PAYMENT_TRANSACTIONS** | `attempt_no`, `gateway_ref`, `gateway_response`, `status` | Append-only log of every gateway call per PAYMENT; enables retry tracking, idempotency verification, and dispute resolution |
 
 ---
 
@@ -226,11 +259,13 @@ erDiagram
 
 | Decision | Rationale |
 |----------|-----------|
-| **INVENTORY as junction table** | Many-to-many between PRODUCTS and WAREHOUSES; stock never lives in PRODUCTS |
-| **ADDRESSES as separate entity** | Customers can have multiple billing/shipping addresses; reused by both ORDERS and SHIPMENTS |
-| **SALES_REPS linked to ORDERS** | `sales_rep_id` is nullable — only B2B orders have a rep; POS and e-commerce orders do not |
-| **PAYMENTS supports multiple records per order** | Allows partial payments, installments, and retries on failure |
-| **QUOTATIONS linked to ORDERS** | Quotation is a sub-state of an order (only in B2B); avoids duplicate order data |
-| **`qty_available` computed field** | `qty_available = qty_on_hand - qty_reserved`; maintained on every reservation/release event |
-| **`status` as varchar not enum** | Allows adding new statuses (e.g., `on_hold`, `backordered`) without schema migration |
-| **Timestamps on every entity** | `created_at` and `updated_at` enable full audit trail and change tracking |
+| **INVENTORY as junction table** | Many-to-many between PRODUCTS and WAREHOUSES; stock never stored in PRODUCTS |
+| **`qty_available` not persisted** | Computed as `qty_on_hand - qty_reserved` at query time; persisting it risks stale reads under concurrent writes |
+| **INVENTORY_MOVEMENTS as append-only log** | Separates current state (INVENTORY) from history (MOVEMENTS); enables fast reads, full audit trail, and stock reconciliation without touching INVENTORY |
+| **PAYMENT_TRANSACTIONS separate from PAYMENTS** | PAYMENTS = logical payment intent; PAYMENT_TRANSACTIONS = physical gateway attempt. Retries add a new row rather than mutating the payment record — supports idempotency and dispute resolution |
+| **QUOTATIONS independent of ORDERS** | QUOTATION is a pre-order document owned by CUSTOMERS; ORDERS.quotation_id (nullable FK) references the source. Eliminates circular dependency and makes the lifecycle unambiguous |
+| **ADDRESSES as separate entity** | Customers have multiple billing/shipping addresses; reused by ORDERS (shipping_addr_id) and SHIPMENTS (address_id) without data duplication |
+| **`sales_rep_id` nullable on ORDERS** | Only B2B orders have an assigned rep; POS and e-commerce orders set this to NULL |
+| **`status` as varchar not enum** | Allows adding statuses (e.g., `on_hold`, `backordered`) without a schema migration |
+| **`created_at` on every entity** | Immutable event timestamp for ordering and audit; `updated_at` on mutable entities enables cache invalidation |
+| **FK constraints everywhere** | Enforced at DB layer to guarantee referential integrity; no orphaned records possible |
