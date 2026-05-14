@@ -13,19 +13,25 @@ sequenceDiagram
 
     Note over C,ACC: CHANNEL 1 - POS Walk-in Retail (Instant Flow)
 
+    Note over ERP: Cashier logs in and opens cash shift
+    ERP->>ERP: Create CASH_SHIFTS record with store_id, employee_id, and opening_cash
+
     C->>ERP: Scan barcode or select products at counter
     ERP->>INV: Check real-time stock availability
     INV-->>ERP: Stock confirmed with quantity and price
     ERP->>C: Display cart and total amount including VAT
 
     C->>ERP: Tender payment via Cash, Card, or QR
-    ERP->>ACC: Record payment transaction
+    ERP->>ACC: Record payment and create ORDER with store_id and cashier_id
     ACC-->>ERP: Payment confirmed and journal entry created
 
     ERP->>INV: Deduct inventory qty_on_hand for sold items
     INV-->>ERP: Stock updated successfully
     ERP->>C: Issue receipt (print or digital)
     Note right of ERP: Order status set to Completed
+
+    Note over ERP: End of shift — cashier counts register
+    ERP->>ERP: Update CASH_SHIFTS with closing_cash and closed_at
 
     Note over C,ACC: CHANNEL 2 - E-commerce Online Order Flow
 
@@ -89,12 +95,13 @@ sequenceDiagram
 
 | Step | POS | E-commerce | Sales Rep (B2B) |
 |------|-----|------------|-----------------|
-| **Order Creation** | Instant scan at counter | Online cart checkout | Request for Quotation (RFQ) |
+| **Order Creation** | Instant scan at counter (store_id + cashier_id recorded) | Online cart checkout | Request for Quotation (RFQ) |
 | **Inventory Check** | Real-time at POS | Real-time + soft reserve | Check availability + lead time |
 | **Pricing** | Fixed retail price | Fixed retail price | Negotiated per product via QUOTATION_ITEMS |
 | **Approval Step** | None | None | Quotation requires customer approval |
 | **Payment Timing** | Immediate at counter | Before shipment (online) | After delivery within credit period |
 | **Fulfillment** | Customer takes goods instantly | Warehouse picks and ships | Warehouse picks and ships |
+| **Cashier Tracking** | Shift opened/closed per session (CASH_SHIFTS) | N/A | N/A |
 | **Invoice** | Receipt issued instantly | Tax invoice after payment | Tax invoice with credit terms |
 | **Settlement** | Immediate | Immediate | Within credit period (Net 30 or Net 60) |
 
