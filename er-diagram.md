@@ -42,6 +42,15 @@ erDiagram
         datetime created_at
     }
 
+    %% Cash must be tracked per terminal, not per store; each physical register has its own session
+    POS_TERMINALS {
+        int      terminal_id   PK
+        int      store_id      FK
+        varchar  name
+        boolean  is_active
+        datetime created_at
+    }
+
     %% qty_available is DERIVED: qty_on_hand - qty_reserved (computed at read time, never persisted)
     INVENTORY {
         int      inventory_id   PK
@@ -115,6 +124,7 @@ erDiagram
         int      channel_id        FK
         int      store_id          FK
         int      cashier_id        FK
+        int      shift_id          FK
         int      sales_rep_id      FK
         int      shipping_addr_id  FK
         int      quotation_id      FK
@@ -171,7 +181,7 @@ erDiagram
         decimal  amount
         varchar  method
         varchar  status
-        varchar  reference_no. UK
+        varchar  reference_no  UK
         datetime paid_at
         varchar  remarks
         datetime created_at
@@ -203,10 +213,10 @@ erDiagram
         datetime created_at
     }
 
-    %% POS — cashier session management
+    %% POS — cashier session management; shift represents a session on a specific POS terminal
     CASH_SHIFTS {
         int      shift_id       PK
-        int      store_id       FK
+        int      terminal_id    FK
         int      employee_id    FK
         decimal  opening_cash
         decimal  closing_cash
@@ -274,12 +284,14 @@ erDiagram
     WAREHOUSES     ||--o{ INVENTORY_MOVEMENTS  : "tracked in"
     PAYMENTS       ||--o{ PAYMENT_TRANSACTIONS : "attempted via"
 
-    %% POS operations — store, cashier, and shift management
+    %% POS operations — store, terminal, cashier, and shift management
     STORES        ||--o{ WAREHOUSES    : "contains"
     STORES        ||--o{ ORDERS        : "originates"
+    STORES        ||--o{ POS_TERMINALS : "has"
     EMPLOYEES     ||--o{ ORDERS        : "processed by"
-    STORES        ||--o{ CASH_SHIFTS   : "has"
+    POS_TERMINALS ||--o{ CASH_SHIFTS   : "runs on"
     EMPLOYEES     ||--o{ CASH_SHIFTS   : "operates"
+    CASH_SHIFTS   ||--o{ ORDERS        : "processed in"
 ```
 
 ---
@@ -295,11 +307,12 @@ erDiagram
 | **SALES_CHANNELS** | `name` — POS / SalesRep / Ecommerce | Channel master; extensible for future channels |
 | **SALES_REPS** | `employee_code` (UK), `region` | Field sales representatives for B2B orders |
 | **EMPLOYEES** | `employee_id`, `name`, `role` — cashier / admin, `is_active` | Internal POS staff; tracks which cashier processes a transaction. No auth system — identity only |
-| **STORES** | `store_id`, `name`, `location`, `is_active` | Physical retail branches (POS locations); linked to ORDERS and WAREHOUSES |
-| **CASH_SHIFTS** | `store_id` (FK), `employee_id` (FK), `opening_cash`, `closing_cash`, `opened_at`, `closed_at` | Cashier session record per store; tracks cash register open/close for daily reconciliation |
+| **STORES** | `store_id`, `name`, `location`, `is_active` | Physical retail branches (POS locations); linked to ORDERS, WAREHOUSES, and POS_TERMINALS |
+| **POS_TERMINALS** | `terminal_id`, `store_id` (FK), `name`, `is_active` | Individual cashier terminals within a store. A store can have multiple terminals; each terminal runs its own CASH_SHIFTS |
+| **CASH_SHIFTS** | `terminal_id` (FK), `employee_id` (FK), `opening_cash`, `closing_cash`, `opened_at`, `closed_at` | Cashier session on a specific terminal; tracks cash register open/close per device. Cash is reconciled per terminal, not per store |
 | **CUSTOMERS** | `customer_type` — Retail / Wholesale, `credit_limit`, `credit_days` | All customer accounts across channels |
 | **ADDRESSES** | `address_type` — billing / shipping, `is_default` | Multiple addresses per customer; used for both ORDER and SHIPMENT |
-| **ORDERS** | `channel_id`, `store_id` (nullable), `cashier_id` (nullable), `sales_rep_id` (nullable), `quotation_id` (nullable), `shipping_amount` | Unified order record; `total_amount = subtotal - discount_amount + tax_amount + shipping_amount`. `store_id` identifies the POS branch; `cashier_id` tracks the employee who processed the transaction |
+| **ORDERS** | `channel_id`, `store_id` (nullable), `cashier_id` (nullable), `shift_id` (nullable), `sales_rep_id` (nullable), `quotation_id` (nullable), `shipping_amount` | Unified order record; `total_amount = subtotal - discount_amount + tax_amount + shipping_amount`. `store_id` identifies the POS branch; `cashier_id` and `shift_id` trace the exact terminal session that processed the transaction |
 | **ORDER_ITEMS** | `quantity`, `unit_price`, `discount_pct` | Line items resolving many-to-many between ORDERS and PRODUCTS |
 | **QUOTATIONS** | `customer_id`, `sales_rep_id`, `valid_until`, `status` | Pre-order document with its own line items (QUOTATION_ITEMS). On approval, a new ORDER is created referencing `quotation_id`; ORDER_ITEMS are populated from QUOTATION_ITEMS |
 | **QUOTATION_ITEMS** | `quotation_id`, `product_id`, `quantity`, `unit_price`, `discount_pct` | Line items within a quotation; mirrors ORDER_ITEMS structure; enables pre-sales pricing negotiation per product |
@@ -325,6 +338,9 @@ erDiagram
 | **ADDRESSES as separate entity** | Customers have multiple billing/shipping addresses; reused by ORDERS (shipping_addr_id) and SHIPMENTS (address_id) without data duplication |
 | **`sales_rep_id` nullable on ORDERS** | Only B2B orders have an assigned rep; POS and e-commerce orders set this to NULL |
 | **`store_id` and `cashier_id` nullable on ORDERS** | POS orders populate both fields; e-commerce and B2B orders leave them NULL. Keeps a single unified ORDERS table without POS-specific branching |
+| **`shift_id` nullable on ORDERS** | POS orders reference the active CASH_SHIFTS session for full terminal traceability; non-POS orders set this to NULL |
+| **CASH_SHIFTS per terminal, not per store** | A store with multiple terminals runs concurrent shifts; reconciliation must happen per device. `terminal_id` FK in CASH_SHIFTS enforces this boundary correctly |
+| **POS_TERMINALS as explicit entity** | Decouples physical hardware identity from the store and the cashier. Enables per-terminal reporting, hardware replacement tracking, and concurrent shift management across registers |
 | **STORES linked to WAREHOUSES** | `store_id` on WAREHOUSES is nullable; links warehouse stock to a physical branch for POS context while preserving flexibility for shared or standalone warehouses |
 | **`status` as varchar not enum** | Allows adding statuses (e.g., `on_hold`, `backordered`) without a schema migration |
 | **`created_at` on every entity** | Immutable event timestamp for ordering and audit; `updated_at` on mutable entities enables cache invalidation |

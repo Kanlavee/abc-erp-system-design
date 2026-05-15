@@ -101,17 +101,18 @@ See full diagram: [er-diagram.md](./er-diagram.md)
 ```
 CATEGORIES ──< PRODUCTS >──< INVENTORY >── WAREHOUSES ──< STORES
                 |                               |                |
-                |                    INVENTORY_MOVEMENTS    CASH_SHIFTS ──< EMPLOYEES
-                └──< ORDER_ITEMS
-                └──< QUOTATION_ITEMS
+                |                    INVENTORY_MOVEMENTS    POS_TERMINALS
+                └──< ORDER_ITEMS                               |
+                └──< QUOTATION_ITEMS                       CASH_SHIFTS ──< EMPLOYEES
 
 QUOTATIONS ──< QUOTATION_ITEMS
      |
      v (converts to on approval)
 CUSTOMERS ──< ADDRESSES ──< ORDERS >── SALES_CHANNELS
                                |    \── SALES_REPS
-                               |    \── STORES  (store_id)
+                               |    \── STORES     (store_id)
                                |    \── EMPLOYEES  (cashier_id)
+                               |    \── CASH_SHIFTS (shift_id)
               ┌────────────────┼──────────────────────┐
           PAYMENTS         INVOICES   SHIPMENTS   ORDER_ITEMS
               |
@@ -126,14 +127,15 @@ CUSTOMERS ──< ADDRESSES ──< ORDERS >── SALES_CHANNELS
 | `PRODUCTS` | Master catalog; no stock stored here | `sku` (UK), `base_price`, `category_id` |
 | `WAREHOUSES` | Physical storage locations; optionally linked to a store branch | `location`, `store_id` (FK, nullable), `is_active` |
 | `STORES` | Physical retail branches (POS locations) | `name`, `location`, `is_active` |
+| `POS_TERMINALS` | Individual cashier registers within a store | `store_id` (FK), `name`, `is_active` |
 | `EMPLOYEES` | Internal POS staff (cashiers) | `name`, `role` — cashier / admin, `is_active` |
 | `INVENTORY` | Stock per warehouse — resolves Products many-to-many Warehouses | `qty_on_hand`, `qty_reserved` (`qty_available` is derived, not stored) |
 | `SALES_CHANNELS` | Channel master — POS / SalesRep / Ecommerce | `name`, `is_active` |
 | `SALES_REPS` | Field sales reps for B2B orders | `employee_code` (UK), `region` |
-| `CASH_SHIFTS` | Cashier session tracking (open/close register per store) | `store_id`, `employee_id`, `opening_cash`, `closing_cash` |
+| `CASH_SHIFTS` | Cashier session per terminal (open/close register) | `terminal_id`, `employee_id`, `opening_cash`, `closing_cash` |
 | `CUSTOMERS` | All customers across channels | `customer_type` Retail/Wholesale, `credit_limit`, `credit_days` |
 | `ADDRESSES` | Multiple addresses per customer | `address_type` billing/shipping, `is_default` |
-| `ORDERS` | Unified order record; `total_amount = subtotal - discount + tax + shipping_amount` | `channel_id`, `store_id` (nullable), `cashier_id` (nullable), `sales_rep_id` (nullable), `quotation_id` (nullable) |
+| `ORDERS` | Unified order record; `total_amount = subtotal - discount + tax + shipping_amount` | `channel_id`, `store_id` (nullable), `cashier_id` (nullable), `shift_id` (nullable), `sales_rep_id` (nullable), `quotation_id` (nullable) |
 | `ORDER_ITEMS` | Line items; resolves Orders many-to-many Products | `quantity`, `unit_price`, `discount_pct` |
 | `QUOTATIONS` | Pre-order document with its own line items; on approval, ORDER + ORDER_ITEMS are created from it | `valid_until`, `status` |
 | `QUOTATION_ITEMS` | Line items within a quotation; mirrors ORDER_ITEMS; enables per-product price negotiation | `quantity`, `unit_price`, `discount_pct` |
@@ -153,6 +155,7 @@ CUSTOMERS ──< ADDRESSES ──< ORDERS >── SALES_CHANNELS
 - **Orders and Payments** — One-to-many; supports partial payments and retries
 - **`sales_rep_id` on ORDERS** — Nullable; set only for B2B orders
 - **`store_id` and `cashier_id` on ORDERS** — Nullable; populated for POS orders only. `store_id` identifies the branch; `cashier_id` references the EMPLOYEES table
+- **`shift_id` on ORDERS** — Nullable; links a POS order to the active CASH_SHIFTS session on a specific terminal for full traceability
 - **INVENTORY_MOVEMENTS and PAYMENT_TRANSACTIONS** — Append-only audit tables; never updated, only inserted
 
 ---
@@ -164,14 +167,14 @@ See full diagram: [business-workflow.md](./business-workflow.md)
 ### POS Flow (Instant)
 
 ```
-Cashier opens shift (CASH_SHIFTS: store_id + employee_id + opening_cash)
+Cashier opens shift (CASH_SHIFTS: terminal_id + employee_id + opening_cash)
   -> Customer scans items
   -> ERP checks stock
-  -> Customer pays (ORDER created with store_id + cashier_id)
+  -> Customer pays (ORDER created with store_id + cashier_id + shift_id)
   -> Receipt issued
   -> Inventory deducted
   -> Order status: Completed
-  -> Cashier closes shift (closing_cash reconciled)
+  -> Cashier closes shift (closing_cash reconciled per terminal)
 ```
 
 ### E-commerce Flow
