@@ -171,7 +171,7 @@ erDiagram
         decimal  amount
         varchar  method
         varchar  status
-        varchar  reference_no
+        varchar  reference_no. UK
         datetime paid_at
         varchar  remarks
         datetime created_at
